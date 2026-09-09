@@ -115,6 +115,13 @@ async function main() {
       type: 'raster-dem',
       tiles: [`${terrainConfig.tiles_url}/{z}/{x}/{y}`],
       tileSize: 512,
+      // mapterhorn-japan-bridge tiles are Terrarium-encoded, not the
+      // MapLibre default (Mapbox Terrain-RGB) -- without this, elevation
+      // decodes to ~800,000m instead of the real ~150m at a verified
+      // sample point (real ground truth: GSI elevation API), which is what
+      // was actually behind the "exaggerated terrain" complaint, not the
+      // `exaggeration` multiplier itself.
+      encoding: 'terrarium',
       attribution: terrainConfig.attribution
     });
     // No vertical exaggeration, as a matter of policy -- this is survey/
