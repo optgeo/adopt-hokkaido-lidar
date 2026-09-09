@@ -112,8 +112,11 @@ async function main() {
       tileSize: 512,
       attribution: terrainConfig.attribution
     });
-    map.setTerrain({ source: 'terrain-dem', exaggeration: 1.2 });
-    map.addControl(new TerrainControl({ source: 'terrain-dem', exaggeration: 1.2 }), 'top-right');
+    // No vertical exaggeration, as a matter of policy -- this is survey/
+    // provenance-oriented tooling, not a scenic viewer, and an exaggerated
+    // terrain would misrepresent the data.
+    map.setTerrain({ source: 'terrain-dem', exaggeration: 1.0 });
+    map.addControl(new TerrainControl({ source: 'terrain-dem', exaggeration: 1.0 }), 'top-right');
 
     addCatalogLayer(map, catalogConfig, manifest, statusEl);
   });

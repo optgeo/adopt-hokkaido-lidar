@@ -92,13 +92,50 @@ CLIは`python -m adopt_hokkaido_lidar <verb>`として直接実行可能にし�
   ——現状の`identifiers`/`db`スキーマはその土台(決定的asset_id・追記型
   バージョニング)を用意しただけで、実行可能な再開ロジックはまだ無い
 
-## 明示的に今回はやらないこと
+## 達成: 最初の1件を実際に公開し、地図上でクリック可能にした(2026-09-09)
 
-- 全72件・全43件の一括ダウンロード
-- Source Cooperativeへの実データアップロード(アクセス自体は確認済み。
-  下記「解決済み」参照。あくまで本番データの投入はまだ行わないという意味)
-- GitHub Pagesの本番公開
-- provenance・ライセンス未確認のデータの公開
+`12JE14_ORIGINAL_LAZ`(item `fb8559df347e43e68f9634dbc17d9f6f`、約4.2MB、
+448,887点)について、発見から地図表示まで全工程を実データで完了した:
+
+1. `confirm-provenance` — 鉛直基準を記録
+   (「JGD2011 (vertical) height, EPSG:6695、推定。根拠: 2023年度測量で
+   JGD2011が公式標準/地面点の実測値がGSI正標高とほぼ一致(誤差0.07m、
+   楕円体高なら30-40m乖離するはず)。公式仕様書(CKAN・ArcGIS・harp.lg.jp・
+   道有林課ページを確認したが未発見)。LAZヘッダー自体はJGD2000を記載——
+   誤表記の可能性が高いと判断」——hfuさんに承認済み)。
+   帰属情報(source_data=道有林課/CC-BY、processing、hosting)を登録
+2. `publish` — ゲート通過、実際にSource Cooperativeへアップロード成功
+   (`https://data.source.coop/smartmaps/adopt-hokkaido-lidar/data/arcgis/
+   fb8559df347e43e68f9634dbc17d9f6f/12je1411/v1/12je1411.copc.laz`、
+   HTTP 200・CORS開放・Range対応を直接curlで確認済み)。
+   ローカルCOPCは検証後に削除、SQLiteには`published`状態で記録
+3. カタログ(`catalog/index.pmtiles`——`footprints`レイヤ、`asset_id`のみ、
+   `catalog/manifest.jsonl`)を生成しSCへアップロード(**現状は手動、
+   専用CLIコマンドは未実装——後述の次の一手参照**)
+4. 本番サイト(https://optgeo.github.io/adopt-hokkaido-lidar/)を実際に
+   操作し、名寄市近郊のフットプリントをクリック→ポップアップ→
+   「Eptiumで開く」ボタンのURLが正しく実COPC URLを指していることを確認
+
+**これで「ArcGIS Hub → CKAN/ArcGIS発見 → ORIGINAL LAZ → COPC → SC公開 →
+地図でクリック可能」という一連の流れが、1件について実証された。**
+
+### 次の一手(未実装)
+
+- カタログ生成(footprint収集・PMTiles再構築・manifest追記)を
+  専用CLIコマンド(`build-catalog`等)にする——現状は手動でtippecanoeを
+  叩いている
+- CKAN系(43件)の`ckan.py`→`zip_inspect.py`による実地判定パイプラインは
+  まだCLIに配線されていない(`text_csv`変換もingest.pyでは
+  `NotImplementedError`のまま)
+- Jクレ案件の残り272件への展開(1件ずつ、閾値ガード付きで)
+- ArcGIS Hub系(28件)の残り26件・HPなし1件は引き続き対象外/要調査のまま
+
+## 明示的にまだやっていないこと
+
+- 全72件・全272件(Jクレ残り)の一括ダウンロード・一括公開
+- CKAN系43件への展開
+- GitHub Pagesの本番公開は完了しているが、実データはまだ1件のみ
+- provenance・ライセンス未確認のデータの公開(ゲートで引き続き強制)
 
 ## 解決済み: Source Cooperative読み書きアクセス
 

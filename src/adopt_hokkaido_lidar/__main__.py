@@ -14,6 +14,7 @@ import sys
 import time
 
 from . import arcgis_search, db, http_client, ingest, publish
+from .attribution import build_standard_attribution, record_attribution
 from .identifiers import stable_asset_id
 from .zip_inspect import classify_member_format, find_raw_point_members, parse_central_directory
 
@@ -124,6 +125,33 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_confirm_provenance(args: argparse.Namespace) -> int:
+    """Record the human-confirmed vertical datum and standard attribution for one asset.
+
+    This is the deliberate human-review step the publish gate exists to
+    force (docs-src/provenance-policy.md) -- it never runs automatically as
+    part of ingest.
+    """
+    conn = db.connect(args.db_path)
+
+    updated = conn.execute(
+        "UPDATE derived_asset_version SET vertical_datum = ? "
+        "WHERE id = (SELECT id FROM derived_asset_version WHERE asset_id = ? ORDER BY version DESC LIMIT 1)",
+        (args.vertical_datum, args.asset_id),
+    ).rowcount
+    if updated == 0:
+        print(f"no derived_asset_version found for {args.asset_id}; run ingest first", file=sys.stderr)
+        return 1
+
+    records = build_standard_attribution(organization_title=args.organization, license_id=args.license)
+    record_attribution(conn, args.asset_id, records)
+    conn.commit()
+    conn.close()
+
+    print(f"recorded vertical_datum and {len(records)} attribution rows for {args.asset_id}")
+    return 0
+
+
 def cmd_publish(args: argparse.Namespace) -> int:
     conn = db.connect(args.db_path)
     try:
@@ -160,6 +188,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_ingest.add_argument("--db-path", default="state.sqlite3")
     p_ingest.add_argument("--work-dir", default=".work")
     p_ingest.set_defaults(func=cmd_ingest)
+
+    p_confirm = sub.add_parser(
+        "confirm-provenance", help="Record human-confirmed vertical datum and attribution for one asset."
+    )
+    p_confirm.add_argument("asset_id")
+    p_confirm.add_argument("--vertical-datum", required=True)
+    p_confirm.add_argument("--organization", required=True, help="Responsible department, e.g. 道有林課")
+    p_confirm.add_argument("--license", required=True, help="e.g. CC-BY")
+    p_confirm.add_argument("--db-path", default="state.sqlite3")
+    p_confirm.set_defaults(func=cmd_confirm_provenance)
 
     p_publish = sub.add_parser("publish", help="Publish a validated asset to Source Cooperative (gated).")
     p_publish.add_argument("asset_id")
