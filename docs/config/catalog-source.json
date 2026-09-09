@@ -1,0 +1,5 @@
+{
+  "pmtiles_url": "https://data.source.coop/smartmaps/adopt-hokkaido-lidar/catalog/index.pmtiles",
+  "manifest_url": "https://data.source.coop/smartmaps/adopt-hokkaido-lidar/catalog/manifest.jsonl",
+  "note": "Not yet published (no COPC has been published as of 2026-09-09). The site must handle these files not existing yet without breaking."
+}

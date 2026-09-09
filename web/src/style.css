@@ -1,0 +1,98 @@
+:root {
+  --bg: #0e1116;
+  --panel-bg: rgba(14, 17, 22, 0.88);
+  --text: #e8ecf1;
+  --text-dim: #9aa5b1;
+  --accent: #4fd1c5;
+  --border: rgba(255, 255, 255, 0.12);
+  font-family: 'Hiragino Sans', 'Noto Sans JP', system-ui, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+}
+
+#map {
+  position: absolute;
+  inset: 0;
+}
+
+#panel {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  z-index: 1;
+  max-width: 320px;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 16px;
+  backdrop-filter: blur(6px);
+}
+
+#panel h1 {
+  font-size: 1rem;
+  margin: 0 0 8px;
+  color: var(--text);
+}
+
+#panel p {
+  font-size: 0.8rem;
+  line-height: 1.5;
+  margin: 0 0 6px;
+  color: var(--text-dim);
+}
+
+#panel a {
+  color: var(--accent);
+}
+
+#status {
+  color: var(--text);
+}
+
+.popup-content {
+  font-family: inherit;
+  min-width: 200px;
+}
+
+.popup-asset-id {
+  font-family: ui-monospace, monospace;
+  font-size: 0.75rem;
+  word-break: break-all;
+  margin: 0 0 6px;
+}
+
+.popup-note {
+  font-size: 0.72rem;
+  color: #666;
+  margin: 0 0 8px;
+}
+
+.popup-eptium-button {
+  display: inline-block;
+  padding: 6px 12px;
+  background: #1a7a70;
+  color: #fff;
+  text-decoration: none;
+  border-radius: 4px;
+  font-size: 0.82rem;
+}
+
+.popup-eptium-button:hover {
+  background: #22988c;
+}
+
+.maplibregl-popup-content {
+  background: #fff;
+  color: #111;
+}
