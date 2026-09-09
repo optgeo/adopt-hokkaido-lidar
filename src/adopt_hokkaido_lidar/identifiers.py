@@ -18,17 +18,26 @@ def _slugify(value: str) -> str:
     return _SAFE_CHARS.sub("-", value.lower()).strip("-")
 
 
-def stable_asset_id(ckan_package_name: str, laz_member_path: str) -> str:
-    """Derive a stable asset_id from a CKAN package name and a LAZ member path.
+_VALID_SOURCE_SYSTEMS = ("ckan", "arcgis")
 
-    Format: "<slugified-package-name>-<12 hex chars of sha256(member path)>".
-    The hash covers the *full* member path (not just the stem) so that two
-    same-named LAZ files in different subdirectories of the same zip never
-    collide.
+
+def stable_asset_id(source_system: str, source_package_id: str, raw_member_path: str) -> str:
+    """Derive a stable asset_id from a source system, package id, and raw member path.
+
+    source_system is included because CKAN package names and ArcGIS item ids
+    are drawn from two unrelated id spaces -- without it, a CKAN package and
+    an ArcGIS item that happened to share an id string would collide.
+
+    Format: "<source_system>-<slugified-package-id>-<12 hex chars of
+    sha256(member path)>". The hash covers the *full* member path (not just
+    the stem) so that two same-named raw files in different subdirectories
+    of the same zip never collide.
     """
-    if not ckan_package_name:
-        raise ValueError("ckan_package_name must not be empty")
-    if not laz_member_path:
-        raise ValueError("laz_member_path must not be empty")
-    digest = hashlib.sha256(laz_member_path.encode("utf-8")).hexdigest()[:12]
-    return f"{_slugify(ckan_package_name)}-{digest}"
+    if source_system not in _VALID_SOURCE_SYSTEMS:
+        raise ValueError(f"source_system must be one of {_VALID_SOURCE_SYSTEMS}, got {source_system!r}")
+    if not source_package_id:
+        raise ValueError("source_package_id must not be empty")
+    if not raw_member_path:
+        raise ValueError("raw_member_path must not be empty")
+    digest = hashlib.sha256(raw_member_path.encode("utf-8")).hexdigest()[:12]
+    return f"{source_system}-{_slugify(source_package_id)}-{digest}"

@@ -4,6 +4,16 @@ CKAN packages vary a lot in what they contain (docs-src/discovery-report.md
 Section 3): some have an ORIGINAL LAZ zip, most don't. This module's job is
 detection, not assumption -- it reports *candidates* and never claims a
 package is pipeline-eligible on its own.
+
+IMPORTANT (learned the hard way on h25oribegawasabou): a resource named
+"オリジナルデータ" / "original.zip" is only a *stage-1* candidate based on
+CKAN metadata alone. It can turn out to contain plain-text XYZ point CSVs
+instead of actual .laz/.las files -- CKAN's resource name says nothing about
+what's actually inside the zip. `find_original_laz_candidates` narrows down
+which resource is worth inspecting; confirming what it actually contains
+requires fetching and parsing the zip's central directory
+(zip_inspect.parse_central_directory + classify_member_format) before any
+asset is treated as pipeline-eligible.
 """
 
 from __future__ import annotations

@@ -15,22 +15,26 @@ import sqlite3
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS source_item (
     id TEXT PRIMARY KEY,                 -- ArcGIS Item id or equivalent
+    source_system TEXT NOT NULL          -- 'ckan' | 'arcgis' -- which catalog this item's data actually lives in
+        CHECK (source_system IN ('ckan', 'arcgis')),
     kind TEXT NOT NULL,                  -- 'coverage_feature' | 'arcgis_item' | ...
     advisory_no TEXT,
     project_name TEXT,
+    responsible_department TEXT,         -- 担当部署 / 計画機関名称, present on every coverage feature
     hp_url TEXT,
     hp_kind TEXT NOT NULL,               -- ckan | arcgis_hub_search | empty | unknown
     discovered_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS source_package (
-    id TEXT PRIMARY KEY,                 -- CKAN package name, or equivalent
+    id TEXT PRIMARY KEY,                 -- CKAN package name, or ArcGIS item id -- namespaced by source_system, never mixed
     source_item_id TEXT NOT NULL REFERENCES source_item(id),
+    source_system TEXT NOT NULL CHECK (source_system IN ('ckan', 'arcgis')),
     license_id TEXT,
     organization_title TEXT,
     notes TEXT,
     fetched_at TEXT NOT NULL,
-    raw_json TEXT NOT NULL               -- full package_show response, for audit
+    raw_json TEXT NOT NULL               -- full package_show / item response, for audit
 );
 
 CREATE TABLE IF NOT EXISTS source_member (
@@ -39,14 +43,16 @@ CREATE TABLE IF NOT EXISTS source_member (
     resource_name TEXT NOT NULL,
     resource_format TEXT NOT NULL,
     resource_url TEXT NOT NULL,
-    is_original_laz_candidate INTEGER NOT NULL DEFAULT 0,
-    laz_member_path TEXT                 -- path of the .laz file inside the zip, once inspected
+    is_original_laz_candidate INTEGER NOT NULL DEFAULT 0,  -- stage-1 guess from resource metadata only, NOT confirmed
+    raw_member_path TEXT,                -- path of the actual raw point file inside the zip, once inspected (zip_inspect.py)
+    raw_format TEXT                      -- 'las' | 'text_csv' | 'unknown', from zip_inspect.classify_member_format
+        CHECK (raw_format IS NULL OR raw_format IN ('las', 'text_csv', 'unknown'))
 );
 
 CREATE TABLE IF NOT EXISTS logical_asset (
     asset_id TEXT PRIMARY KEY,           -- identifiers.stable_asset_id(...)
     source_member_id TEXT NOT NULL REFERENCES source_member(id),
-    laz_member_path TEXT NOT NULL,
+    raw_member_path TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'discovered'
         CHECK (status IN (
             'discovered', 'validated', 'published',
@@ -59,6 +65,8 @@ CREATE TABLE IF NOT EXISTS derived_asset_version (
     id TEXT PRIMARY KEY,
     asset_id TEXT NOT NULL REFERENCES logical_asset(asset_id),
     version INTEGER NOT NULL,
+    source_format TEXT                   -- 'las' | 'text_csv' -- what PDAL reader stage was used (readers.las vs readers.text)
+        CHECK (source_format IS NULL OR source_format IN ('las', 'text_csv')),
     copc_local_path TEXT,
     sha256 TEXT,
     point_count INTEGER,
