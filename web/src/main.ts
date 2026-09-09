@@ -97,6 +97,11 @@ async function main() {
     style: 'https://stars.optgeo.org/style/bvmap-dark',
     bounds: HOKKAIDO_COVERAGE_BOUNDS,
     fitBoundsOptions: { padding: 24 },
+    // Namespaced so the URL reads #map=z/lat/lng rather than a bare hash --
+    // keeps the fragment identifiable if anything else ever shares the URL.
+    // A URL that already carries #map=... on load wins over `bounds` above,
+    // which is exactly what makes a shared/bookmarked view work.
+    hash: 'map',
     // A style URL makes MapLibre add its own default attribution control;
     // disable it here so the explicit compact one below isn't duplicated.
     attributionControl: false
