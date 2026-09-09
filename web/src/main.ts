@@ -96,7 +96,10 @@ async function main() {
     container: 'map',
     style: 'https://stars.optgeo.org/style/bvmap-dark',
     bounds: HOKKAIDO_COVERAGE_BOUNDS,
-    fitBoundsOptions: { padding: 24 }
+    fitBoundsOptions: { padding: 24 },
+    // A style URL makes MapLibre add its own default attribution control;
+    // disable it here so the explicit compact one below isn't duplicated.
+    attributionControl: false
   });
 
   map.addControl(new NavigationControl(), 'top-right');
