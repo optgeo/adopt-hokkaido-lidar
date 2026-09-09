@@ -254,3 +254,30 @@ User-Agentの明示的な設定はこの調査フェーズではまだ実装し�
   `publish`コマンド自体が未実装(現状`init-db`のみ)。中断後の再実行時に
   「どこまで済んでいるかを見て続きから再開する」判定ロジックは、これから
   実装するPhase 1の課題として残っている
+
+  → **2026-09-09、`ingest`/`publish`/`confirm-provenance`/`build-catalog`/
+  `process-jkure-batch`を実装し、実データで再入可能性を実証した**
+  (§8参照)。
+
+## 8. 重要な発見: 1つのZIPに複数のLAZファイルが入っている場合がある
+
+Jクレ案件272件の残りをバッチ処理する実装中、item
+`01cb9198f4af4628a539631a276fff23`のZIPを実際に開いたところ、
+**16件のLAZファイル**(`ORIGINAL_LAZ/12IE0711.laz`〜`12IE0744.laz`、
+4×4のより細かい図郭区画)が1つのZIPに含まれていることが分かった。
+
+Phase 0で確認した最初のサンプル(`12HE88_ORIGINAL_LAZ`)がたまたま
+1ZIP=1LAZだったため、当初のパイプライン設計(`ingest_arcgis_source_package`)は
+「1 source_package(ZIP) = 1 logical_asset」を前提にしていたが、これは
+誤った一般化だった。コードは実際にこのケースに遭遇した際、機械的に1つを
+選んだり結合したりせず、**`NoRawMembersFound`とは別の形で「1件ではない」
+ことを検出して処理を止めた**(当初の実装は`NotExactlyOneRawMember`として
+明示的に拒否)。これを受けて設計を「1 source_package = 複数の
+logical_asset(ZIP内の生ファイル1件ごとに1つ)」に修正した
+——**あくまで「1 LAZ = 1 COPC、絶対にマージしない」という原則自体は
+変わらない**。1 ZIPに複数のLAZが入りうる、という前提の修正だけである。
+
+この修正に合わせて、`find_unpublished_jkure_packages`(バッチ処理の
+再開判定)も「そのsource_packageに属する生メンバーが**全て**publishedか」を
+見るように直した(「いずれか1件がpublished」だと、16件中1件だけ公開して
+残り15件を永久にスキップしてしまうバグになるところだった)。

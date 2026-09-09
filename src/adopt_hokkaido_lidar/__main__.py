@@ -9,14 +9,11 @@ modules land.
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 import time
 
-from . import arcgis_search, db, http_client, ingest, publish
+from . import arcgis_search, batch, catalog, db, ingest, publish
 from .attribution import build_standard_attribution, record_attribution
-from .identifiers import stable_asset_id
-from .zip_inspect import classify_member_format, find_raw_point_members, parse_central_directory
 
 JKURE_TAG = "上川北部・網走西部Jクレ"
 
@@ -70,58 +67,29 @@ def cmd_discover_jkure(args: argparse.Namespace) -> int:
 
 def cmd_ingest(args: argparse.Namespace) -> int:
     conn = db.connect(args.db_path)
-    row = conn.execute(
-        "SELECT sp.id, sm.id, sm.resource_url FROM source_package sp "
-        "JOIN source_member sm ON sm.source_package_id = sp.id WHERE sp.id = ?",
-        (args.item_id,),
-    ).fetchone()
-    if row is None:
-        print(f"no source_package/source_member found for item {args.item_id!r}; run discover-jkure first", file=sys.stderr)
+    try:
+        items = ingest.ingest_arcgis_source_package(conn, args.item_id, args.work_dir)
+    except (ValueError, ingest.NoRawMembersFound) as e:
+        print(str(e), file=sys.stderr)
         return 1
-    package_id, member_id, data_url = row
+    finally:
+        conn.close()
 
-    final_url, total_size = http_client.resolve_download(data_url)
+    print(f"ingested {len(items)} member(s) from {args.item_id}:")
+    for asset_id, raw_stem, result in items:
+        print(f"  {asset_id}: {result.point_count} points, sha256={result.sha256}, crs={result.crs_wkt}")
+        print(f"    raw_stem for publish: {raw_stem}")
+    return 0
 
-    tail = http_client.fetch_tail(final_url, total_size, ingest.TAIL_FETCH_BYTES)
-    members = parse_central_directory(tail.body)
-    raw_members = find_raw_point_members(members)
-    if len(raw_members) != 1:
-        print(
-            f"expected exactly 1 raw point member in {args.item_id}, found {len(raw_members)}: "
-            f"{[m.name for m in raw_members]} -- refusing to guess which one",
-            file=sys.stderr,
-        )
-        return 1
-    member = raw_members[0]
 
-    raw_stem = os.path.splitext(os.path.basename(member.name))[0].lower()
-    asset_id = stable_asset_id("arcgis", package_id, member.name)
-
-    conn.execute(
-        "UPDATE source_member SET raw_member_path = ?, raw_format = ? WHERE id = ?",
-        (member.name, classify_member_format(member.name), member_id),
-    )
-    conn.execute(
-        "INSERT OR IGNORE INTO logical_asset (asset_id, source_member_id, raw_member_path, status) "
-        "VALUES (?, ?, ?, 'discovered')",
-        (asset_id, member_id, member.name),
-    )
-    conn.commit()
-
-    print(f"ingesting {asset_id} ({member.name}, {member.uncompressed_size} bytes uncompressed)...")
-    result = ingest.ingest_member(
-        zip_url=final_url,
-        zip_total_size=total_size,
-        member_path=member.name,
-        asset_id=asset_id,
-        work_dir=args.work_dir,
-    )
-    ingest.record_ingest_result(conn, result, asset_id=asset_id)
-    conn.close()
-
-    print(f"ingested {asset_id}: {result.point_count} points, sha256={result.sha256}")
-    print(f"crs: {result.crs_wkt}")
-    print(f"raw_stem for publish: {raw_stem}")
+def cmd_build_catalog(args: argparse.Namespace) -> int:
+    conn = db.connect(args.db_path)
+    try:
+        pmtiles_url, manifest_url = catalog.publish_catalog(conn, args.work_dir)
+    finally:
+        conn.close()
+    print(f"published catalog: {pmtiles_url}")
+    print(f"published manifest: {manifest_url}")
     return 0
 
 
@@ -149,6 +117,42 @@ def cmd_confirm_provenance(args: argparse.Namespace) -> int:
     conn.close()
 
     print(f"recorded vertical_datum and {len(records)} attribution rows for {args.asset_id}")
+    return 0
+
+
+def cmd_process_jkure_batch(args: argparse.Namespace) -> int:
+    """Ingest -> confirm-provenance -> publish every remaining Jクレ item, one at a time.
+
+    Safe to interrupt (Ctrl-C) and re-run -- picks up wherever it left off,
+    since it only ever looks at what's not yet published.
+    """
+    conn = db.connect(args.db_path)
+
+    def on_item_done(i: int, total: int, result) -> None:
+        print(f"[{i}/{total}] {result.package_id} -> {result.outcome}: {result.detail}")
+
+    try:
+        summary = batch.run_batch(
+            conn,
+            args.work_dir,
+            vertical_datum=args.vertical_datum,
+            organization=args.organization,
+            license_id=args.license,
+            delay_seconds=args.delay_seconds,
+            limit=args.limit,
+            on_item_done=on_item_done,
+        )
+    finally:
+        conn.close()
+
+    print(f"\npublished {summary.published_count} / {len(summary.results)} attempted")
+    if summary.stopped_early:
+        print(f"STOPPED EARLY: {summary.stop_reason}", file=sys.stderr)
+        return 3
+    errors = [r for r in summary.results if r.outcome == "error"]
+    if errors:
+        print(f"{len(errors)} item(s) errored (see log above) -- re-run to retry", file=sys.stderr)
+        return 1
     return 0
 
 
@@ -206,6 +210,23 @@ def build_parser() -> argparse.ArgumentParser:
     p_publish.add_argument("--raw-stem", required=True)
     p_publish.add_argument("--db-path", default="state.sqlite3")
     p_publish.set_defaults(func=cmd_publish)
+
+    p_catalog = sub.add_parser("build-catalog", help="Rebuild and upload catalog/index.pmtiles + manifest.jsonl.")
+    p_catalog.add_argument("--db-path", default="state.sqlite3")
+    p_catalog.add_argument("--work-dir", default=".work")
+    p_catalog.set_defaults(func=cmd_build_catalog)
+
+    p_batch = sub.add_parser(
+        "process-jkure-batch", help="Ingest+confirm+publish every remaining Jクレ item, one at a time."
+    )
+    p_batch.add_argument("--vertical-datum", required=True)
+    p_batch.add_argument("--organization", required=True)
+    p_batch.add_argument("--license", required=True)
+    p_batch.add_argument("--delay-seconds", type=float, default=batch.DEFAULT_DELAY_SECONDS)
+    p_batch.add_argument("--limit", type=int, default=None, help="Process at most this many items, then stop.")
+    p_batch.add_argument("--db-path", default="state.sqlite3")
+    p_batch.add_argument("--work-dir", default=".work")
+    p_batch.set_defaults(func=cmd_process_jkure_batch)
 
     return parser
 

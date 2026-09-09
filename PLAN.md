@@ -119,15 +119,42 @@ CLIは`python -m adopt_hokkaido_lidar <verb>`として直接実行可能にし�
 **これで「ArcGIS Hub → CKAN/ArcGIS発見 → ORIGINAL LAZ → COPC → SC公開 →
 地図でクリック可能」という一連の流れが、1件について実証された。**
 
-### 次の一手(未実装)
+### カタログ生成のコマンド化・272件展開(2026-09-09、実装中)
 
-- カタログ生成(footprint収集・PMTiles再構築・manifest追記)を
-  専用CLIコマンド(`build-catalog`等)にする——現状は手動でtippecanoeを
-  叩いている
+hfuさんの指示により着手。実装したもの:
+
+- `catalog.py` — `build_catalog_files()`(published_asset+footprintから
+  GeoJSON→tippecanoeでPMTiles、manifest.jsonl生成)/`publish_catalog()`
+  (SCへアップロード)。`build-catalog`コマンドとして配線
+- `reproject.py` — footprintのbbox(投影座標系)をWGS84へ変換
+  (`cs2cs`ラッパー、実データの既知座標で検証済み)
+- `ingest.py`にfootprint計算を追加(`derived_asset_version`のbboxから
+  WGS84ポリゴンを算出し`footprint`テーブルへ記録)
+- `batch.py` — `process-jkure-batch`コマンド。未公開のJクレ案件を1件ずつ
+  ingest→confirm-provenance→publish→カタログ再構築。中断・再実行に対応
+  (`find_unpublished_jkure_packages`が「未着手」の判定を行う)
+
+**重要な設計修正(実データで発見)**: 当初「1 source_package(ZIP) = 1
+logical_asset」という前提だったが、item
+`01cb9198f4af4628a539631a276fff23`のZIPが実際には**16件のLAZファイル**
+(4×4の細分図郭)を含んでいることが判明(discovery-report.md §8参照)。
+「1 LAZ = 1 COPC、絶対にマージしない」の原則は変えず、「1 ZIPに複数の
+LAZが入りうる」という前提に修正した。これに伴い、バッチの再開判定も
+「そのZIPの生メンバー全てがpublished済みか」を見るように修正
+(でないと16件中1件公開しただけで残り15件を永久にスキップするバグに
+なるところだった——`test_batch.py`に回帰テストあり)。
+
+hfuさんの了承により、gh-pages(`docs/`)への都度コミットは行わない
+——カタログはSC側のみで完結する設計で確定。
+
+現在、修正版で実際のバッチ処理を検証中(1件ずつ、時間をかけて実行)。
+
+### 残っている作業
+
 - CKAN系(43件)の`ckan.py`→`zip_inspect.py`による実地判定パイプラインは
   まだCLIに配線されていない(`text_csv`変換もingest.pyでは
   `NotImplementedError`のまま)
-- Jクレ案件の残り272件への展開(1件ずつ、閾値ガード付きで)
+- Jクレ案件272件全体への本格展開(検証が済み次第)
 - ArcGIS Hub系(28件)の残り26件・HPなし1件は引き続き対象外/要調査のまま
 
 ## 明示的にまだやっていないこと

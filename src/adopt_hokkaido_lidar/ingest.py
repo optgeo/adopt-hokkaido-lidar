@@ -18,7 +18,16 @@ from dataclasses import dataclass
 from . import http_client
 from .disk_guard import DEFAULT_MIN_FREE_BYTES, check_free_space_at
 from .pdal_pipeline import build_copc_pipeline, probe_metadata, run_pipeline
-from .zip_inspect import ZipMember, classify_member_format, find_eocd, member_byte_range, parse_central_directory
+from .reproject import extract_epsg_from_projcs_wkt, reproject_bbox_to_wgs84_ring
+from .identifiers import stable_asset_id
+from .zip_inspect import (
+    ZipMember,
+    classify_member_format,
+    find_eocd,
+    find_raw_point_members,
+    member_byte_range,
+    parse_central_directory,
+)
 
 # Working assumption for peak local footprint per in-flight item: the raw
 # decompressed member plus the COPC output, with headroom -- see PLAN.md
@@ -40,6 +49,7 @@ class IngestResult:
     crs_wkt: str | None
     source_format: str
     validation_report_path: str
+    footprint_ring_wgs84: list[list[float]] | None = None
 
 
 def _decompress_member(zip_member_bytes: bytes) -> bytes:
@@ -144,6 +154,18 @@ def ingest_member(
     meta = probe_metadata(copc_path)["metadata"]
     crs_wkt = meta.get("spatialreference")
 
+    footprint_ring_wgs84: list[list[float]] | None = None
+    footprint_error: str | None = None
+    try:
+        if not crs_wkt:
+            raise ValueError("no embedded CRS to reproject the footprint from")
+        epsg = extract_epsg_from_projcs_wkt(crs_wkt)
+        footprint_ring_wgs84 = reproject_bbox_to_wgs84_ring(
+            meta["minx"], meta["miny"], meta["maxx"], meta["maxy"], epsg
+        )
+    except Exception as e:  # noqa: BLE001 -- footprint failure must not abort ingest; recorded, not silent
+        footprint_error = str(e)
+
     validation_report = {
         "asset_id": asset_id,
         "source_zip_url": zip_url,
@@ -164,6 +186,8 @@ def ingest_member(
             "correct vs. a processing-pipeline mislabeling -- see "
             "docs-src/discovery-report.md. Flagged for human review before publish."
         )
+    if footprint_error:
+        validation_report["notes"].append(f"footprint reprojection failed: {footprint_error}")
 
     report_path = os.path.join(work_dir, f"{asset_id}.validation_report.json")
     with open(report_path, "w") as f:
@@ -177,6 +201,7 @@ def ingest_member(
         crs_wkt=crs_wkt,
         source_format=source_format,
         validation_report_path=report_path,
+        footprint_ring_wgs84=footprint_ring_wgs84,
     )
 
 
@@ -207,4 +232,97 @@ def record_ingest_result(conn: sqlite3.Connection, result: IngestResult, *, asse
         ),
     )
     conn.execute("UPDATE logical_asset SET status = 'validated' WHERE asset_id = ?", (asset_id,))
+
+    if result.footprint_ring_wgs84:
+        lons = [p[0] for p in result.footprint_ring_wgs84]
+        lats = [p[1] for p in result.footprint_ring_wgs84]
+        geometry_geojson = json.dumps(
+            {"type": "Polygon", "coordinates": [result.footprint_ring_wgs84]}
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO footprint "
+            "(asset_id, bbox_minx, bbox_miny, bbox_maxx, bbox_maxy, geometry_geojson) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (asset_id, min(lons), min(lats), max(lons), max(lats), geometry_geojson),
+        )
+
     conn.commit()
+
+
+class NoRawMembersFound(ValueError):
+    """Raised when a source_package's zip has no recognizable LAS/LAZ or text point member at all.
+
+    Refuses to guess -- this is the situation docs-src/discovery-report.md
+    flags as needing human classification (e.g. h25oribegawasabou's
+    "original.zip" that turned out to contain neither).
+    """
+
+
+def ingest_arcgis_source_package(
+    conn: sqlite3.Connection, package_id: str, work_dir: str
+) -> list[tuple[str, str, IngestResult]]:
+    """Resolve, inspect, and ingest every raw point member of one ArcGIS-sourced source_package.
+
+    A single zip can hold multiple mesh sub-tiles as separate LAZ members
+    (confirmed live: item 01cb9198f4af4628a539631a276fff23 held 16 --
+    12IE0711.laz through 12IE0744.laz). Each becomes its own
+    source_member/logical_asset, since "1 LAZ = 1 COPC" is the actual
+    publishing unit, not "1 zip = 1 COPC". Shared by the `ingest` CLI verb
+    and batch.py. Returns a list of (asset_id, raw_stem, IngestResult), one
+    per member.
+    """
+    row = conn.execute(
+        "SELECT sm.id, sm.resource_url FROM source_member sm WHERE sm.source_package_id = ? LIMIT 1",
+        (package_id,),
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"no source_member found for source_package {package_id!r}")
+    placeholder_member_id, data_url = row
+
+    final_url, total_size = http_client.resolve_download(data_url)
+    tail = http_client.fetch_tail(final_url, total_size, TAIL_FETCH_BYTES)
+    members = parse_central_directory(tail.body)
+    raw_members = find_raw_point_members(members)
+    if not raw_members:
+        raise NoRawMembersFound(f"no LAS/LAZ or text point member found in {package_id}")
+
+    results: list[tuple[str, str, IngestResult]] = []
+    for i, member in enumerate(raw_members):
+        member_id = placeholder_member_id if i == 0 else f"{package_id}::member::{i}"
+        raw_stem = os.path.splitext(os.path.basename(member.name))[0].lower()
+        asset_id = stable_asset_id("arcgis", package_id, member.name)
+
+        already_published = conn.execute(
+            "SELECT 1 FROM published_asset WHERE asset_id = ?", (asset_id,)
+        ).fetchone()
+        if already_published:
+            continue  # resumed run: this member was already fully published, don't redo the work
+
+        conn.execute(
+            "INSERT OR IGNORE INTO source_member "
+            "(id, source_package_id, resource_name, resource_format, resource_url) "
+            "VALUES (?, ?, ?, 'ZIP', ?)",
+            (member_id, package_id, member.name, data_url),
+        )
+        conn.execute(
+            "UPDATE source_member SET raw_member_path = ?, raw_format = ? WHERE id = ?",
+            (member.name, classify_member_format(member.name), member_id),
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO logical_asset (asset_id, source_member_id, raw_member_path, status) "
+            "VALUES (?, ?, ?, 'discovered')",
+            (asset_id, member_id, member.name),
+        )
+        conn.commit()
+
+        result = ingest_member(
+            zip_url=final_url,
+            zip_total_size=total_size,
+            member_path=member.name,
+            asset_id=asset_id,
+            work_dir=work_dir,
+        )
+        record_ingest_result(conn, result, asset_id=asset_id)
+        results.append((asset_id, raw_stem, result))
+
+    return results
