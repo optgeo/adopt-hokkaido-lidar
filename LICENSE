@@ -1,0 +1,6 @@
+CC0 1.0 Universal — see https://creativecommons.org/publicdomain/zero/1.0/
+
+This license applies only to this project's own code and documentation.
+It does NOT apply to source LiDAR data, converted COPC files, basemap
+tiles, or terrain data referenced by this project -- each of those is
+governed by its own upstream license (see docs-src/attribution.md).
