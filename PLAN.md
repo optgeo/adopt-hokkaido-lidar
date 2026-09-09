@@ -125,3 +125,49 @@ CLIは`python -m adopt_hokkaido_lidar <verb>`として直接実行可能にし�
 - Description: 出典・帰属は案件ごとに個別確認する旨、原本ZIP/LAZは
   再配布せずCOPC派生物のみを公開する旨を明記(全案件一括のライセンス表記は
   避ける)。詳細はSource Cooperative側のプロダクトページを参照
+
+## 実装完了: ingest/publishコマンド、実データで動作確認済み(2026-09-09)
+
+`src/adopt_hokkaido_lidar/`に以下を追加:
+
+- `disk_guard.py` — 空き容量チェック(閾値20GB、`ingest_member`が新規
+  ダウンロード前に必ず通す)
+- `http_client.py` — User-Agent付きの丁寧なHTTPクライアント
+  (`adopt-hokkaido-lidar/0.1 (+https://github.com/optgeo/adopt-hokkaido-lidar)`、
+  hfuさんの選択によりメールアドレスは含めない)。429/Retry-Afterの
+  指数バックオフ対応
+- `arcgis_search.py` — ArcGIS org横断タグ検索(discovery-report.md §3.2で
+  確認した`tags:"LAZ" AND tags:"ORIGINAL"`パターン)のネットワーク層
+- `pdal_pipeline.py` — PDALパイプラインJSON構築(純粋関数、テスト済み)+
+  subprocess実行(argvリスト、`shell=True`不使用)。`pdal info --metadata`
+  経由でのCRS抽出も含む
+- `zip_inspect.py`に`member_byte_range()`を追加——ZIP全体をダウンロードせず、
+  1メンバーだけをレンジGETで取り出す(h25oribegawasabouのような多エントリZIPで
+  帯域を節約する設計、実データで検証済み)
+- `sc_client.py` — Source Cooperativeへのaws s3 cp/rm/head-objectラッパー
+- `ingest.py` — 1メンバー分の「レンジDL→展開→PDAL変換→checksum→CRS抽出→
+  validation_report生成」を実行。JGD2000のような疑わしい埋め込みCRSは
+  自動補正せず、`validation_report.notes`に警告として記録するのみ
+- `publish.py` — 公開ゲート(license/crs/vertical_datum/attribution一式が
+  揃っているかを確認)。**不合格の場合はアップロードせず、
+  `logical_asset.status`を`suspended_provenance_review`にして理由を記録する
+  ——このゲートは実際に発火させて確認済み(下記)**
+
+### 実データでのエンドツーエンド確認(2026-09-09)
+
+Jクレ案件の中から最小のアイテム(`12JE14_ORIGINAL_LAZ`、約4.2MB)を選び、
+`discover-jkure` → `ingest` → `publish`を実際に実行した:
+
+1. `discover-jkure`: 273件のArcGISアイテムを実際に検索・記録(手作業調査時と
+   同じ件数と一致)
+2. `ingest fb8559df347e43e68f9634dbc17d9f6f`: ZIP全体ではなく該当メンバー
+   (`ORIGINAL_LAZ/12JE1411.laz`)のみをレンジGETし、448,887点のCOPCへの
+   変換に成功。CRSはこの案件でも同じくJGD2000(EPSG:2454)——単発ではなく
+   このプロジェクト全体の傾向である可能性が高いことが分かった
+3. `publish`: **想定通りゲートで拒否された**
+   (`vertical_datum`未確認、`attribution[source_data/processing/hosting]`
+   未登録)。ローカルのCOPCファイルは削除されず、
+   `logical_asset.status='suspended_provenance_review'`として記録された
+
+**この案件はまだ地図に公開できていない。** 鉛直基準の確認と帰属情報の
+登録が次の実質的なブロッカー。

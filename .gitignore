@@ -3,6 +3,7 @@ __pycache__/
 .pytest_cache/
 .venv/
 *.sqlite3
+.work/
 .DS_Store
 web/node_modules/
 # docs/ is the GitHub Pages source (vite build output of web/) -- committed, not ignored.

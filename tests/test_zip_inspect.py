@@ -11,6 +11,7 @@ from adopt_hokkaido_lidar.zip_inspect import (
     classify_member_format,
     find_eocd,
     find_raw_point_members,
+    member_byte_range,
     parse_central_directory,
 )
 
@@ -105,3 +106,59 @@ def test_find_raw_point_members_empty_when_zip_has_neither_laz_nor_text():
     zip_bytes = _build_zip({"ORIGINAL/": b"", "ORIGINAL/report.pdf": b"P" * 100})
     members = parse_central_directory(_tail(zip_bytes))
     assert find_raw_point_members(members) == []
+
+
+def _decompress_member_from_range(zip_bytes: bytes, start: int, end: int) -> bytes:
+    # Mirrors the manual curl+zlib procedure used against the real
+    # h25oribegawasabou/ArcGIS zips in docs-src/discovery-report.md: parse
+    # the local file header found at the start of the ranged bytes, then
+    # inflate what follows.
+    import zlib
+
+    chunk = zip_bytes[start : end + 1]
+    name_len = int.from_bytes(chunk[26:28], "little")
+    extra_len = int.from_bytes(chunk[28:30], "little")
+    data_start = 30 + name_len + extra_len
+    return zlib.decompress(chunk[data_start:], -15)
+
+
+def test_member_byte_range_extracts_correct_bytes_for_middle_and_last_member():
+    entries = {
+        "ORIGINAL/": b"",
+        "ORIGINAL/a.laz": b"AAAA" * 500,
+        "ORIGINAL/b_org.txt": b"1,2,3\n" * 300,
+        "ORIGINAL/c.laz": b"CCCC" * 200,
+    }
+    zip_bytes = _build_zip(entries)
+    members = parse_central_directory(_tail(zip_bytes))
+    cd_size, cd_offset, _ = find_eocd(_tail(zip_bytes))
+    by_name = {m.name: m for m in members}
+
+    # Middle member: range must stop before the next member's local header.
+    start, end = member_byte_range(by_name["ORIGINAL/b_org.txt"], members, cd_offset)
+    recovered = _decompress_member_from_range(zip_bytes, start, end)
+    assert recovered == entries["ORIGINAL/b_org.txt"]
+
+    # Last physical member: range must stop before the central directory.
+    start, end = member_byte_range(by_name["ORIGINAL/c.laz"], members, cd_offset)
+    recovered = _decompress_member_from_range(zip_bytes, start, end)
+    assert recovered == entries["ORIGINAL/c.laz"]
+    assert end == cd_offset - 1
+
+
+def test_member_byte_range_rejects_member_not_in_list():
+    from adopt_hokkaido_lidar.zip_inspect import ZipMember
+
+    zip_bytes = _build_zip({"a.laz": b"x" * 100, "b.laz": b"y" * 100})
+    members = parse_central_directory(_tail(zip_bytes))
+    _, cd_offset, _ = find_eocd(_tail(zip_bytes))
+
+    bogus = ZipMember(
+        name="not-really-here.laz",
+        compression_method=8,
+        compressed_size=10,
+        uncompressed_size=10,
+        local_header_offset=999_999,
+    )
+    with pytest.raises(ValueError):
+        member_byte_range(bogus, members, cd_offset)

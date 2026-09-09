@@ -125,3 +125,31 @@ def find_raw_point_members(members: list[ZipMember]) -> list[ZipMember]:
         for m in members
         if not m.is_directory and classify_member_format(m.name) != RAW_FORMAT_UNKNOWN
     ]
+
+
+def member_byte_range(target: ZipMember, all_members: list[ZipMember], central_dir_offset: int) -> tuple[int, int]:
+    """Compute the [start, end] byte range (inclusive) to range-GET one member's raw zip bytes.
+
+    The range covers `target`'s own local file header (which the caller
+    must still parse to find where compressed data actually starts -- local
+    and central-directory extra-field lengths can differ) through to just
+    before the next member's local header, or through to just before the
+    central directory if `target` is physically last. This lets a caller
+    download a single member out of a many-member zip (e.g. one of the 31
+    entries in h25oribegawasabou's original.zip) without pulling the whole
+    archive.
+
+    Members are ordered by local_header_offset, not central-directory
+    order, since the two aren't guaranteed to match even though they
+    usually do in practice.
+    """
+    ordered = sorted(all_members, key=lambda m: m.local_header_offset)
+    idx = next((i for i, m in enumerate(ordered) if m.local_header_offset == target.local_header_offset), None)
+    if idx is None:
+        raise ValueError("target is not present in all_members")
+    start = ordered[idx].local_header_offset
+    if idx + 1 < len(ordered):
+        end = ordered[idx + 1].local_header_offset - 1
+    else:
+        end = central_dir_offset - 1
+    return start, end
