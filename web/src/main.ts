@@ -138,6 +138,19 @@ async function main() {
   });
 }
 
+/** First 'symbol' layer's id in the current style, or undefined if there isn't one.
+ *
+ * Passed as addLayer's `beforeId` so labels/annotations always render above
+ * our layers (hfu's request) -- without it, addLayer stacks new layers on
+ * top of literally everything, including basemap text. bvmap-dark's first
+ * symbol layer sits well after a long run of fill/line layers (roads,
+ * administrative boundaries, water), which is fine: sitting above those is
+ * fine and expected, only labels must stay on top.
+ */
+function firstSymbolLayerId(map: MaplibreMap): string | undefined {
+  return map.getStyle()?.layers?.find((l) => l.type === 'symbol')?.id;
+}
+
 function addCatalogLayer(
   map: MaplibreMap,
   catalogConfig: CatalogSourceConfig,
@@ -149,27 +162,35 @@ function addCatalogLayer(
     url: `pmtiles://${catalogConfig.pmtiles_url}`
   });
 
-  map.addLayer({
-    id: 'copc-footprints-fill',
-    type: 'fill',
-    source: 'copc-footprints',
-    'source-layer': 'footprints',
-    paint: {
-      'fill-color': '#4fd1c5',
-      'fill-opacity': 0.35
-    }
-  });
+  const beforeId = firstSymbolLayerId(map);
 
-  map.addLayer({
-    id: 'copc-footprints-line',
-    type: 'line',
-    source: 'copc-footprints',
-    'source-layer': 'footprints',
-    paint: {
-      'line-color': '#4fd1c5',
-      'line-width': 1.5
-    }
-  });
+  map.addLayer(
+    {
+      id: 'copc-footprints-fill',
+      type: 'fill',
+      source: 'copc-footprints',
+      'source-layer': 'footprints',
+      paint: {
+        'fill-color': '#4fd1c5',
+        'fill-opacity': 0.35
+      }
+    },
+    beforeId
+  );
+
+  map.addLayer(
+    {
+      id: 'copc-footprints-line',
+      type: 'line',
+      source: 'copc-footprints',
+      'source-layer': 'footprints',
+      paint: {
+        'line-color': '#4fd1c5',
+        'line-width': 1.5
+      }
+    },
+    beforeId
+  );
 
   map.on('click', 'copc-footprints-fill', (e: MapLayerMouseEvent) => {
     const feature = e.features?.[0];
