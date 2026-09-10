@@ -11,13 +11,26 @@ shell=True, matching the same constraint applied to PDAL invocation.
 
 from __future__ import annotations
 
+import re
 import subprocess
+import time
 from dataclasses import dataclass
 
 SC_ENDPOINT_URL = "https://data.source.coop"
 SC_PROFILE = "source-coop"
 
 _BASE_ARGS = ["aws", "s3", "--profile", SC_PROFILE, "--endpoint-url", SC_ENDPOINT_URL]
+
+DEFAULT_UPLOAD_MAX_RETRIES = 5
+DEFAULT_UPLOAD_BASE_DELAY_S = 2.0
+
+# Observed live during the Jクレ batch (2026-09-10): `aws s3 cp` occasionally
+# fails a multipart UploadPart with a Cloudflare 520 ("Web server returned an
+# unknown error"), which is CloudFront/Cloudflare-edge flakiness in front of
+# Source Cooperative's storage, not a real problem with the object or
+# credentials. AWS CLI's own internal retry doesn't seem to absorb this case
+# reliably, so retry the whole `cp` at this layer instead.
+_RETRYABLE_STDERR_PATTERN = re.compile(r"\((?:520|52[1-9]|59\d)\)|Could not connect|Connection reset")
 
 
 @dataclass(frozen=True)
@@ -36,8 +49,28 @@ def _run(args: list[str]) -> CommandResult:
     return CommandResult(returncode=proc.returncode, stdout=proc.stdout, stderr=proc.stderr)
 
 
-def upload(local_path: str, s3_url: str) -> CommandResult:
-    return _run([*_BASE_ARGS, "cp", local_path, s3_url])
+def upload(
+    local_path: str,
+    s3_url: str,
+    *,
+    max_retries: int = DEFAULT_UPLOAD_MAX_RETRIES,
+    base_delay: float = DEFAULT_UPLOAD_BASE_DELAY_S,
+) -> CommandResult:
+    """Upload one file, retrying on a transient-looking failure (see _RETRYABLE_STDERR_PATTERN).
+
+    A retried upload re-runs the whole `aws s3 cp`, including any part
+    already sent for a multipart transfer -- there's no cheap way to resume
+    a partial multipart upload through the plain CLI, so a large file's
+    retry does re-send bytes. Accepted as the simple, correct option here;
+    revisit only if this turns out to be the actual bottleneck.
+    """
+    attempt = 0
+    while True:
+        result = _run([*_BASE_ARGS, "cp", local_path, s3_url])
+        if result.ok or attempt >= max_retries or not _RETRYABLE_STDERR_PATTERN.search(result.stderr):
+            return result
+        time.sleep(base_delay * (2**attempt))
+        attempt += 1
 
 
 def remove(s3_url: str) -> CommandResult:
