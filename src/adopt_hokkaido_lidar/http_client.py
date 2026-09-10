@@ -16,7 +16,7 @@ from dataclasses import dataclass
 
 USER_AGENT = "adopt-hokkaido-lidar/0.1 (+https://github.com/optgeo/adopt-hokkaido-lidar)"
 
-DEFAULT_MAX_RETRIES = 5
+DEFAULT_MAX_RETRIES = 1
 DEFAULT_BASE_DELAY_S = 1.0
 
 # 403 is included here on purpose, not just 429/5xx: observed live during the

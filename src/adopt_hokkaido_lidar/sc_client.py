@@ -21,7 +21,7 @@ SC_PROFILE = "source-coop"
 
 _BASE_ARGS = ["aws", "s3", "--profile", SC_PROFILE, "--endpoint-url", SC_ENDPOINT_URL]
 
-DEFAULT_UPLOAD_MAX_RETRIES = 5
+DEFAULT_UPLOAD_MAX_RETRIES = 1
 DEFAULT_UPLOAD_BASE_DELAY_S = 2.0
 
 # Observed live during the Jクレ batch (2026-09-10): `aws s3 cp` occasionally
