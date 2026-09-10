@@ -19,12 +19,37 @@ USER_AGENT = "adopt-hokkaido-lidar/0.1 (+https://github.com/optgeo/adopt-hokkaid
 DEFAULT_MAX_RETRIES = 5
 DEFAULT_BASE_DELAY_S = 1.0
 
+# 403 is included here on purpose, not just 429/5xx: observed live during the
+# Jクレ batch run (2026-09-10) as a transient failure from ArcGIS's
+# CloudFront-fronted /data endpoint -- a manual retry of the exact same
+# request against the exact same item succeeded within seconds. Treated as
+# CDN/backend flakiness rather than a real permission denial for this
+# specific endpoint; retrying costs nothing since a *genuine* 403 will just
+# keep failing until max_retries is exhausted and then raise normally.
+_RETRYABLE_HTTP_CODES = {403, 429}
+
 
 def compute_backoff_delay(attempt: int, retry_after: float | None, base_delay: float = DEFAULT_BASE_DELAY_S) -> float:
     """Delay before retry `attempt` (0-indexed). Honors a server-supplied Retry-After if present."""
     if retry_after is not None:
         return retry_after
     return base_delay * (2**attempt)
+
+
+def _retry_on_transient_errors(fn, *, max_retries: int = DEFAULT_MAX_RETRIES):
+    """Call fn() (no args), retrying with backoff on _RETRYABLE_HTTP_CODES. Re-raises on exhaustion or other errors."""
+    attempt = 0
+    while True:
+        try:
+            return fn()
+        except urllib.error.HTTPError as e:
+            if e.code in _RETRYABLE_HTTP_CODES and attempt < max_retries:
+                retry_after = e.headers.get("Retry-After")
+                delay = compute_backoff_delay(attempt, float(retry_after) if retry_after else None)
+                time.sleep(delay)
+                attempt += 1
+                continue
+            raise
 
 
 @dataclass(frozen=True)
@@ -41,7 +66,7 @@ def _request(url: str, *, range_header: str | None = None) -> urllib.request.Req
     return urllib.request.Request(url, headers=headers)
 
 
-def resolve_download(url: str) -> tuple[str, int]:
+def resolve_download(url: str, *, max_retries: int = DEFAULT_MAX_RETRIES) -> tuple[str, int]:
     """Follow redirects for `url` and return (final_url, total_size), transferring ~1 byte.
 
     Used to turn an ArcGIS item's /data endpoint (which 302s to a presigned
@@ -53,54 +78,44 @@ def resolve_download(url: str) -> tuple[str, int]:
     the full body over the wire. A ranged request is the only way to
     follow the redirect and learn the size without pulling real data.
     """
-    req = _request(url, range_header="bytes=0-0")
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        final_url = resp.geturl()
-        content_range = resp.headers.get("Content-Range")  # "bytes 0-0/<total>"
-        resp.read()
-    if content_range and "/" in content_range:
-        total_size = int(content_range.rsplit("/", 1)[-1])
-    else:
-        total_size = int(resp.headers.get("Content-Length", -1))
-    return final_url, total_size
+
+    def _do():
+        req = _request(url, range_header="bytes=0-0")
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            final_url = resp.geturl()
+            content_range = resp.headers.get("Content-Range")  # "bytes 0-0/<total>"
+            resp.read()
+        if content_range and "/" in content_range:
+            total_size = int(content_range.rsplit("/", 1)[-1])
+        else:
+            total_size = int(resp.headers.get("Content-Length", -1))
+        return final_url, total_size
+
+    return _retry_on_transient_errors(_do, max_retries=max_retries)
 
 
 def fetch_range(
     url: str, start: int, end: int, *, max_retries: int = DEFAULT_MAX_RETRIES
 ) -> RangeResponse:
-    """Fetch bytes [start, end] (inclusive) via a single Range request, with polite retry on 429."""
-    req = _request(url, range_header=f"bytes={start}-{end}")
-    attempt = 0
-    while True:
-        try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                return RangeResponse(status=resp.status, body=resp.read(), headers=dict(resp.headers))
-        except urllib.error.HTTPError as e:
-            if e.code == 429 and attempt < max_retries:
-                retry_after = e.headers.get("Retry-After")
-                delay = compute_backoff_delay(attempt, float(retry_after) if retry_after else None)
-                time.sleep(delay)
-                attempt += 1
-                continue
-            raise
+    """Fetch bytes [start, end] (inclusive) via a single Range request, with polite retry."""
+
+    def _do():
+        req = _request(url, range_header=f"bytes={start}-{end}")
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return RangeResponse(status=resp.status, body=resp.read(), headers=dict(resp.headers))
+
+    return _retry_on_transient_errors(_do, max_retries=max_retries)
 
 
 def fetch_json(url: str, *, max_retries: int = DEFAULT_MAX_RETRIES) -> dict:
-    """GET a URL and parse the response body as JSON, with polite retry on 429."""
-    req = _request(url)
-    attempt = 0
-    while True:
-        try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                return json.loads(resp.read())
-        except urllib.error.HTTPError as e:
-            if e.code == 429 and attempt < max_retries:
-                retry_after = e.headers.get("Retry-After")
-                delay = compute_backoff_delay(attempt, float(retry_after) if retry_after else None)
-                time.sleep(delay)
-                attempt += 1
-                continue
-            raise
+    """GET a URL and parse the response body as JSON, with polite retry."""
+
+    def _do():
+        req = _request(url)
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read())
+
+    return _retry_on_transient_errors(_do, max_retries=max_retries)
 
 
 def fetch_tail(url: str, total_size: int, n_bytes: int) -> RangeResponse:
@@ -112,22 +127,14 @@ def fetch_tail(url: str, total_size: int, n_bytes: int) -> RangeResponse:
 def download_to_file(
     url: str, dest_path: str, *, chunk_size: int = 1024 * 1024, max_retries: int = DEFAULT_MAX_RETRIES
 ) -> int:
-    """Stream a full download to `dest_path`, following redirects, retrying on 429. Returns bytes written."""
-    req = _request(url)
-    attempt = 0
-    while True:
-        try:
-            with urllib.request.urlopen(req, timeout=60) as resp, open(dest_path, "wb") as f:
-                written = 0
-                while chunk := resp.read(chunk_size):
-                    f.write(chunk)
-                    written += len(chunk)
-                return written
-        except urllib.error.HTTPError as e:
-            if e.code == 429 and attempt < max_retries:
-                retry_after = e.headers.get("Retry-After")
-                delay = compute_backoff_delay(attempt, float(retry_after) if retry_after else None)
-                time.sleep(delay)
-                attempt += 1
-                continue
-            raise
+    """Stream a full download to `dest_path`, following redirects, with polite retry. Returns bytes written."""
+
+    def _do():
+        with urllib.request.urlopen(_request(url), timeout=60) as resp, open(dest_path, "wb") as f:
+            written = 0
+            while chunk := resp.read(chunk_size):
+                f.write(chunk)
+                written += len(chunk)
+            return written
+
+    return _retry_on_transient_errors(_do, max_retries=max_retries)
