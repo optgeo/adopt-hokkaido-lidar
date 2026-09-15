@@ -1,10 +1,11 @@
 # HANDOVER
 
-## Status as of 2026-09-13 18:41頃(JST) — バッチは意図的に停止中(グレースフル停止済み)
+## Status as of 2026-09-16 07:15頃(JST) — Jクレ273件、完全公開達成
 
-このセッションはここで一区切り。**バッチ処理プロセスは既に安全に完走・終了
-しており、`.work/`も掃除済み。壊れて止まっているのではなく、Jクレ全件を
-一通り試行し終えた状態。** 残タスクは下記「まず確認すべきこと」以降を参照。
+このセッションはここで一区切り。**Jクレ273 source_package全件が
+`published`のみ(validated/discovered/suspended_provenance_reviewいずれも0件)
+に到達した。** バッチ処理プロセスは完走・終了済み。次はJクレ以外
+(CKAN・ArcGIS Hub残り)へ着手するフェーズ。
 
 - リポジトリ: https://github.com/optgeo/adopt-hokkaido-lidar
 - 地図サイト: https://optgeo.github.io/adopt-hokkaido-lidar/
@@ -20,48 +21,35 @@ cd /Users/hfu/adopt-hokkaido-lidar
 sqlite3 .work/state.sqlite3 "SELECT count(*) FROM published_asset;"
 sqlite3 .work/state.sqlite3 "SELECT status, count(*) FROM logical_asset GROUP BY status;"
 ps aux | grep process-jkure-batch   # 何も出ないはず(停止済み)
-ls -la .work/                        # batch_full.log と state.sqlite3 のみのはず
 ```
 
-停止時点の実測値(2026-09-13 18:41頃):
-- `published_asset`: **3491件**
-- `logical_asset`ステータス内訳: `published` 3491 / `validated` 43 /
-  `discovered` 3(`suspended_provenance_review`は0件——ゲート弾かれは今のところ発生していない)
-- Jクレ全273件、**全source_packageに着手済み**(discoveryは完了、100%カバー)
-- 未公開のまま残る43+3件は、**すべて下記3パッケージに集中**しており、それ以外の
-  270パッケージは全メンバーが公開済み(SQLで再確認可、下記クエリ参照)
+到達時点の実測値(2026-09-16 07:15頃):
+- `published_asset`: **3539件**
+- `logical_asset`ステータス内訳: `published` 3539件のみ
+  (`validated`/`discovered`/`suspended_provenance_review`すべて0件)
+- Jクレ全273 source_package、**全メンバー公開完了**
 
-```sql
-SELECT sp.id, la.status, count(*)
-FROM logical_asset la
-JOIN source_member sm ON la.source_member_id = sm.id
-JOIN source_package sp ON sm.source_package_id = sp.id
-WHERE la.status != 'published'
-GROUP BY sp.id, la.status ORDER BY sp.id;
-```
+## ✅ 解決済み: 「同一403が繰り返される」問題の正体(2026-09-16に判明)
 
-## ⚠️ 次の一手: 3パッケージが2回連続で同一403エラー(要人間確認)
+2026-09-12〜13にかけて3パッケージが繰り返し`ingest: HTTPError 403`で
+失敗していた件(旧版のこのファイルで「要人間確認」としていたもの)は、
+**アイテム固有のアクセス制限ではなかった**。実際に該当ArcGISアイテム
+(`41804cddcecc4a0193e60fc0d302b4c2`)を人間が直接確認したところ:
 
-以下3件のArcGIS由来source_packageは、**別々のバッチ実行(2026-09-12と
-2026-09-13)で2回とも**同一エラーで失敗している——単発の一時的ネットワーク
-不調ではなく、このアイテム固有のアクセス制限(非公開化・権限変更等)を
-疑うべき段階:
+- アイテムメタデータは`"access":"public"`、ブロックの形跡なし
+- コードと全く同じリクエスト(Range `bytes=0-0`・同一User-Agent、
+  redirectを手動でたどる)を実行したところ、`302→302→206`と正常応答
+- 共通点: 3件とも**約1.6〜1.8GB級の大容量ZIP**だった
 
-```
-41804cddcecc4a0193e60fc0d302b4c2  (16メンバー、うち15件validated止まり)
-7ebfa94deabe43bcbb63b081a5928ad7  (15メンバー、うち14件validated止まり)
-814b432edb7742218911c24198ad8793  (15メンバー、うち14件validated止まり)
-```
-
-失敗内容: `ingest: HTTPError: HTTP Error 403: Forbidden`(ZIPダウンロード
-そのものが拒否される。discovery自体は成功しておりメンバー一覧は判明済み)。
-
-**推奨対応**: 3回目を機械的に再実行する前に、このIDに対応するArcGIS
-アイテムページを人間が直接確認し、アクセス権限・公開設定が変わっていないか
-見ること。タグ(`raw_json`カラム)には「名寄市・美深町・音威子府村・興部町・
-西興部村・雄武町」等が含まれるが、この文字列はJクレ全273件に共通して入って
-おり地理的な絞り込みには使えない(2026-09-13に確認済み、誤った推測をしない
-こと)。
+**推定原因**: ArcGISのdata URLはS3署名付きURL(有効期限10分、
+`X-Amz-Expires=600`)にリダイレクトする。このマシンは複数のClaude Code
+フリートセッションが並行稼働し帯域を奪い合うため、大容量ファイルの
+ダウンロードが署名の10分枠内に収まらず期限切れになり、403として
+表面化していた可能性が高い(`http_client.py`は403を1回だけリトライする
+設計だが、帯域競合による遅延には不十分だった)。**対処は単純再実行**
+(3回目で3件とも成功)。今後も大容量アイテムで同様の403が出たら、まず
+ネットワーク帯域が空いているタイミングでの再実行を試すこと——アイテム
+個別のアクセス制限を疑うのは、それでも複数回失敗する場合のみでよい。
 
 ## ⚠️ 最重要: `state.sqlite3`は絶対に消さない・上書きしない
 
@@ -70,23 +58,15 @@ GROUP BY sp.id, la.status ORDER BY sp.id;
 バックアップが無いので、削除・置き換え・別環境への「まっさらな再init」は
 絶対にしないこと。触る前に一度どこかにコピーを取っておくと安全。
 
-## `.work/`を掃除済み(このセッションで実施、2回目)
+## `.work/`は今回未掃除(次に触るセッションで掃除してよい)
 
-前回(2026-09-12)と同じ方針でグレースフル停止のたびに掃除している。
-今回削除したのは:
-
-- `*.validation_report.json` 1493個(SQLiteに同内容が記録済み)
-- `*.copc.laz` 34個(≒3.3GB分——上記3パッケージの「validated止まり」43件分
-  の一部を含む、ダウンロード・変換済みだが未公開だったもの)
-- カタログビルド生成物一式(`catalog_index.geojson`/`.pmtiles`、
-  `catalog_manifest.jsonl`)
-
-結果、`.work/`は約3.3GB→約31MBに縮小(`batch_full.log`+`state.sqlite3`のみ)。
-
-**影響**: 上記3パッケージの「validated止まり」43+3件のCOPCファイルはローカル
-にもう存在しない。ただし前述の通りこの3パッケージは403エラーが再現し続けて
-おり、次回再実行しても同じ理由(ZIPダウンロード自体の拒否)で再度失敗する
-可能性が高い——ローカルキャッシュの有無は今回の障害には無関係と見られる。
+2026-09-16時点で`.work/`は約35MB(`*.validation_report.json`が約47個
+残っている——公開は完了しているのでSQLiteに同内容が記録済み、いつでも
+削除して問題ない)。過去2回(2026-09-12・09-13)と同じ方針で、次に
+このプロジェクトに触るセッションが`*.validation_report.json`・
+`*.copc.laz`・`catalog_index.*`/`catalog_manifest.jsonl`を削除して
+`batch_full.log`+`state.sqlite3`のみに戻してよい(コマンド例は過去の
+git log参照)。
 
 ## 再開手順
 
@@ -132,6 +112,16 @@ GROUP BY sp.id, la.status ORDER BY sp.id;
   停止すること(放置すると7日後に自動失効するが、早めに掃除するのが望ましい)。
 - 再開時は同じ発想でこの監視ジョブを再設定すること。プロンプト文面は
   このセッションのやり取りに実例あり(cron idは使い捨てなので都度新規作成)。
+
+**⚠️ `Monitor`ツールを使う際の落とし穴(2026-09-16に発生・自己解決)**: `command`
+パラメータ内で`<`や`&`を含むシェル構文(`wc -l < file`、`cmd &`によるバック
+グラウンド化等)を書く際、開始行番号の算出にバグがあると`tail -n +N -f`が
+意図しない位置から出力し、**古いログ内容を「新規イベント」として誤通知する**
+ことがある(state.sqlite3自体は無事だったが、一時的にバッチを誤ってSIGSTOPで
+止める誤判断につながった)。対策: 行番号算出(`$(wc -l < file)+1`)より、
+`tail -n 0 -f file`(呼び出し時点のファイル末尾から追従、算出不要)の方が
+事故りにくい。何か疑わしいイベントが来たら、まず`ls -la`でファイルの
+mtimeが本当に更新されているか確認してから対応すること。
 
 ## 認証関連の既知の問題と対処
 
@@ -191,10 +181,9 @@ GROUP BY sp.id, la.status ORDER BY sp.id;
 
 ## 未着手・既知の非効率(次の一手)
 
-- Jクレ273件は全件着手済み・270件は完全公開済み。残る3件は上記「⚠️次の一手」
-  参照(機械的な再実行より人間によるArcGIS側確認が優先)
+- **Jクレ273件は完全公開完了(2026-09-16)。次はここから**:
 - CKAN系43件(text_csv変換パス、`ingest.py`では`NotImplementedError`のまま)
-  ——Jクレがほぼ片付いた今、次に着手する自然な候補
+  ——次に着手する自然な候補
 - ArcGIS Hub系の残り26件(LAZ無し確認済み・対象外)・HPなし1件(未調査)
 - **既知の非効率(未修正、対応は未着手のまま停止)**: `already_published`判定が
   「公開済みか」だけを見ており「変換済みだが未公開」を区別しない。そのため
